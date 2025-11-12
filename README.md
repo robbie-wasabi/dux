@@ -255,6 +255,17 @@ Remove worktrees and branches for PRs that have been merged.
 dux clean  # Removes all merged worktrees
 ```
 
+### `dux view`
+
+Open the current branch's GitHub PR in your default browser.
+
+**Usage:**
+```bash
+dux view  # Runs from anywhere inside the repo
+```
+
+If no PR exists for the current branch, a helpful error is displayed so you can create one with `gh pr create` or `dux create`.
+
 ---
 
 ## Example Workflow

@@ -220,15 +220,24 @@ def open_with_ai_assistant(dir_path: str, assistant: str, issue_description: str
 
 WT_FILENAME = ".dux.yml"
 
-def write_wt_example(path: Path, env: str, install: str, run_cmd: str, port: int, force: bool):
+def write_wt_example(path: Path, force: bool):
     if path.exists() and not force:
         raise SystemExit(f"{WT_FILENAME} already exists. Use --force to overwrite.")
-    content = f"""# .dux.yml
-# Repo-local bootstrap for worktrees. No defaults; all keys required.
-env: {env}
-install: {install}
-run: {run_cmd}
-port: {port}
+    content = """# .dux.yml
+# Repo-local bootstrap configuration for worktrees.
+# All fields are optional. Uncomment and configure as needed.
+
+# Path to environment file to copy into worktrees
+# env: .env.local
+
+# Command to install dependencies
+# install: pnpm install
+
+# Command to run dev server
+# run: pnpm dev
+
+# Base port for automatic port allocation
+# port: 3000
 """
     path.write_text(content, encoding="utf-8")
     return str(path)
@@ -245,15 +254,14 @@ def parse_simple_yaml(path: Path) -> dict:
             continue
         k, v = line.split(":", 1)
         cfg[k.strip()] = v.strip()
-    required = ["env", "install", "run", "port"]
-    missing = [k for k in required if k not in cfg or cfg[k] == ""]
-    if missing:
-        raise SystemExit(f"{WT_FILENAME} missing required keys: {', '.join(missing)}")
-    # normalize port to int string
-    try:
-        int(cfg["port"])
-    except ValueError:
-        raise SystemExit("port must be an integer")
+
+    # Validate port if provided
+    if "port" in cfg and cfg["port"]:
+        try:
+            int(cfg["port"])
+        except ValueError:
+            raise SystemExit("port must be an integer")
+
     return cfg
 
 # ----------------
@@ -365,33 +373,34 @@ def ensure_env_port(env_file: Path, port: int):
 def bootstrap_worktree(dir_path: str, repo_root: str, assigned_port: int | None, run_dev_server: bool = False):
     cfg = parse_simple_yaml(Path(repo_root) / WT_FILENAME)
 
-    # Copy env file into the new worktree (keep same filename)
-    env_src = Path(repo_root) / cfg["env"]
-    env_dst = Path(dir_path) / Path(cfg["env"]).name
-    if env_src.exists():
-        shutil.copy2(env_src, env_dst)
-        print(f"env copied -> {env_dst}")
-    else:
-        print(f"warn: env file not found at {env_src}")
-        # still create an empty file so we can set PORT deterministically
-        env_dst.touch()
+    # Copy env file into the new worktree (keep same filename) - if configured
+    if cfg.get("env"):
+        env_src = Path(repo_root) / cfg["env"]
+        env_dst = Path(dir_path) / Path(cfg["env"]).name
+        if env_src.exists():
+            shutil.copy2(env_src, env_dst)
+            print(f"env copied -> {env_dst}")
+            # If allocator provided a port, write it
+            if assigned_port:
+                ensure_env_port(env_dst, assigned_port)
+        else:
+            print(f"warn: env file not found at {env_src}")
 
-    # If allocator provided a port, write it
-    if assigned_port:
-        ensure_env_port(env_dst, assigned_port)
+    # Install deps - if configured
+    if cfg.get("install"):
+        print(f"install: {cfg['install']}")
+        sh(cfg["install"], cwd=dir_path, check=True)
 
-    # Install deps
-    print(f"install: {cfg['install']}")
-    sh(cfg["install"], cwd=dir_path, check=True)
-
-    # Run dev server if requested
-    if run_dev_server:
+    # Run dev server if requested - if configured
+    if run_dev_server and cfg.get("run"):
         print(f"Starting dev server: {cfg['run']}")
-        print(f"Running on port: {assigned_port if assigned_port else cfg['port']}")
+        if assigned_port:
+            print(f"Running on port: {assigned_port}")
         sh(cfg["run"], cwd=dir_path, check=False)
-    else:
+    elif cfg.get("run"):
         print(f"To start dev server, run: {cfg['run']}")
-        print(f"port: {assigned_port if assigned_port else cfg['port']}")
+        if assigned_port:
+            print(f"port: {assigned_port}")
 
 # ----------------
 # Commands
@@ -400,35 +409,105 @@ def bootstrap_worktree(dir_path: str, repo_root: str, assigned_port: int | None,
 def cmd_init(args):
     root = repo_root()
     path = Path(root) / WT_FILENAME
-    written = write_wt_example(
-        path=path,
-        env=args.env,
-        install=args.install,
-        run_cmd=args.run,
-        port=args.port,
-        force=args.force,
-    )
+    written = write_wt_example(path=path, force=args.force)
     print(f"Wrote {written}")
+
+def process_single_issue(issue_num, root, base, args):
+    """Process a single issue and create its worktree. Returns a dict with results."""
+    try:
+        issue = gh_issue_view(issue_num)
+        num = issue["number"]
+        title = issue["title"]
+        issue_url = issue["url"]
+        body = issue.get("body", "")
+        branch = f"issue/{num}-{slugify(title)}"
+        dir_path = worktree_dir(root, branch)
+
+        # Prepare issue description for AI assistants
+        issue_description = f"Issue #{num}: {title}\n\n{body}\n\nIssue URL: {issue_url}"
+
+        # Check if worktree already exists (check both directory and git worktree list)
+        worktree_exists = False
+        if Path(dir_path).exists():
+            worktree_exists = True
+        else:
+            # Also check if it's in git worktree list
+            try:
+                worktrees = parse_worktrees(root)
+                for wt in worktrees:
+                    wt_path = wt.get("path")
+                    if wt_path == dir_path or wt.get("branch") == branch:
+                        # Verify the path actually exists
+                        if Path(wt_path).exists():
+                            worktree_exists = True
+                            dir_path = wt_path  # Use the actual path
+                        break
+            except Exception:
+                pass
+
+        if worktree_exists:
+            return {
+                "issue_num": num,
+                "status": "exists",
+                "branch": branch,
+                "dir_path": dir_path,
+                "issue_url": issue_url,
+            }
+
+        git_worktree_add(root, branch, dir_path, base)
+        push_set_upstream(dir_path, branch)
+        empty_commit_if_needed(dir_path, f"chore: start {branch} (#{num})")
+
+        pr = gh_pr_view_by_head(branch)
+        if not pr:
+            try:
+                pr = gh_pr_create(
+                    base_branch=base,
+                    head_branch=branch,
+                    title=f"[#{num}] {title}",
+                    body=f"Tracking {issue_url}\\n\\nCloses #{num}",
+                    draft=not args.ready
+                )
+            except subprocess.CalledProcessError:
+                pr = gh_pr_view_by_head(branch)
+                if not pr:
+                    pr = {"url": "N/A", "state": "unknown"}
+
+        # Allocate a port deterministically without a registry - if port configured
+        cfg = parse_simple_yaml(Path(root) / WT_FILENAME)
+        assigned_port = None
+        if cfg.get("port"):
+            base_port = int(cfg["port"])
+            env_key = cfg.get("env", "")
+            used = used_ports(root, env_key)
+            assigned_port = allocate_port(branch, base_port, used)
+            # Persist port to worktree config
+            set_worktree_port(dir_path, assigned_port)
+
+        # Bootstrap via .dux.yml (copy env, set PORT, install deps)
+        if not args.no_bootstrap:
+            bootstrap_worktree(dir_path, root, assigned_port, run_dev_server=args.run)
+
+        return {
+            "issue_num": num,
+            "status": "created",
+            "branch": branch,
+            "dir_path": dir_path,
+            "issue_url": issue_url,
+            "pr_url": pr.get("url") if isinstance(pr, dict) else pr,
+            "port": assigned_port,
+        }
+    except Exception as e:
+        return {
+            "issue_num": issue_num,
+            "status": "error",
+            "error": str(e),
+        }
 
 def cmd_create(args):
     root = repo_root()
     base = args.base or get_default_branch()
     ensure_base_up_to_date(base)
-
-    # load or create issue
-    if args.new:
-        issue = gh_issue_create(args.new, "Auto-created for worktree.")
-    else:
-        issue = gh_issue_view(args.issue)
-    num = issue["number"]
-    title = issue["title"]
-    issue_url = issue["url"]
-    body = issue.get("body", "")
-    branch = f"issue/{num}-{slugify(title)}"
-    dir_path = worktree_dir(root, branch)
-
-    # Prepare issue description for AI assistants
-    issue_description = f"Issue #{num}: {title}\n\n{body}\n\nIssue URL: {issue_url}"
 
     # Clean up stale worktrees (registered in git but directory doesn't exist)
     try:
@@ -436,83 +515,148 @@ def cmd_create(args):
     except Exception:
         pass
 
-    # Check if worktree already exists (check both directory and git worktree list)
-    worktree_exists = False
-    if Path(dir_path).exists():
-        worktree_exists = True
+    # Parse issue numbers from comma-separated list
+    issue_numbers = []
+    if args.new:
+        # Create a new issue
+        issue = gh_issue_create(args.new, "Auto-created for worktree.")
+        issue_numbers = [str(issue["number"])]
     else:
-        # Also check if it's in git worktree list
-        try:
-            worktrees = parse_worktrees(root)
-            for wt in worktrees:
-                wt_path = wt.get("path")
-                if wt_path == dir_path or wt.get("branch") == branch:
-                    # Verify the path actually exists
-                    if Path(wt_path).exists():
-                        worktree_exists = True
-                        dir_path = wt_path  # Use the actual path
-                    break
-        except Exception:
-            pass
+        # Split comma-separated issue numbers
+        issue_numbers = [num.strip() for num in args.issue.split(",")]
 
-    if worktree_exists:
-        print(f"Worktree already exists at: {dir_path}")
+    # Process single issue (legacy behavior)
+    if len(issue_numbers) == 1:
+        issue_num = issue_numbers[0]
+        issue = gh_issue_view(issue_num)
+        num = issue["number"]
+        title = issue["title"]
+        issue_url = issue["url"]
+        body = issue.get("body", "")
+        branch = f"issue/{num}-{slugify(title)}"
+        dir_path = worktree_dir(root, branch)
+
+        # Prepare issue description for AI assistants
+        issue_description = f"Issue #{num}: {title}\n\n{body}\n\nIssue URL: {issue_url}"
+
+        # Check if worktree already exists
+        worktree_exists = False
+        if Path(dir_path).exists():
+            worktree_exists = True
+        else:
+            try:
+                worktrees = parse_worktrees(root)
+                for wt in worktrees:
+                    wt_path = wt.get("path")
+                    if wt_path == dir_path or wt.get("branch") == branch:
+                        if Path(wt_path).exists():
+                            worktree_exists = True
+                            dir_path = wt_path
+                        break
+            except Exception:
+                pass
+
+        if worktree_exists:
+            print(f"Worktree already exists at: {dir_path}")
+            if args.code:
+                open_in_code(dir_path)
+            if args.claude:
+                open_with_ai_assistant(dir_path, "claude", issue_description, branch)
+            if args.codex:
+                open_with_ai_assistant(dir_path, "codex", issue_description, branch)
+            print("Branch:  ", branch)
+            print("Worktree:", dir_path)
+            return
+
+        git_worktree_add(root, branch, dir_path, base)
+        push_set_upstream(dir_path, branch)
+        empty_commit_if_needed(dir_path, f"chore: start {branch} (#{num})")
+
+        pr = gh_pr_view_by_head(branch)
+        if not pr:
+            try:
+                pr = gh_pr_create(
+                    base_branch=base,
+                    head_branch=branch,
+                    title=f"[#{num}] {title}",
+                    body=f"Tracking {issue_url}\\n\\nCloses #{num}",
+                    draft=not args.ready
+                )
+            except subprocess.CalledProcessError:
+                pr = gh_pr_view_by_head(branch)
+                if not pr:
+                    print("Warning: Could not create or find PR")
+                    pr = {"url": "N/A", "state": "unknown"}
+
+        cfg = parse_simple_yaml(Path(root) / WT_FILENAME)
+        assigned_port = None
+        if cfg.get("port"):
+            base_port = int(cfg["port"])
+            env_key = cfg.get("env", "")
+            used = used_ports(root, env_key)
+            assigned_port = allocate_port(branch, base_port, used)
+            set_worktree_port(dir_path, assigned_port)
+
+        if not args.no_bootstrap:
+            bootstrap_worktree(dir_path, root, assigned_port, run_dev_server=args.run)
+
         if args.code:
             open_in_code(dir_path)
         if args.claude:
             open_with_ai_assistant(dir_path, "claude", issue_description, branch)
         if args.codex:
             open_with_ai_assistant(dir_path, "codex", issue_description, branch)
-        print("Branch:  ", branch)
+
         print("Worktree:", dir_path)
+        print("Branch:  ", branch)
+        print("Issue:   ", issue_url)
+        print("PR:      ", pr.get("url") if isinstance(pr, dict) else pr)
+        if assigned_port:
+            print("Assigned port:", assigned_port)
         return
 
-    git_worktree_add(root, branch, dir_path, base)
-    push_set_upstream(dir_path, branch)
-    empty_commit_if_needed(dir_path, f"chore: start {branch} (#{num})")  # seed PR if needed
+    # Process multiple issues sequentially
+    print(f"Processing {len(issue_numbers)} issues...")
+    results = []
 
-    pr = gh_pr_view_by_head(branch)
-    if not pr:
-        try:
-            pr = gh_pr_create(
-                base_branch=base,
-                head_branch=branch,
-                title=f"[#{num}] {title}",
-                body=f"Tracking {issue_url}\\n\\nCloses #{num}",
-                draft=not args.ready
-            )
-        except subprocess.CalledProcessError:
-            # PR might already exist, try to fetch it again
-            pr = gh_pr_view_by_head(branch)
-            if not pr:
-                print("Warning: Could not create or find PR")
-                pr = {"url": "N/A", "state": "unknown"}
+    for issue_num in issue_numbers:
+        result = process_single_issue(issue_num, root, base, args)
+        results.append(result)
 
-    # Allocate a port deterministically without a registry
-    cfg = parse_simple_yaml(Path(root) / WT_FILENAME)
-    base_port = int(cfg["port"])
-    used = used_ports(root, cfg["env"])
-    assigned_port = allocate_port(branch, base_port, used)
+        # Print progress
+        if result["status"] == "created":
+            print(f"✓ Issue #{result['issue_num']}: Created worktree at {result['dir_path']}")
+        elif result["status"] == "exists":
+            print(f"○ Issue #{result['issue_num']}: Worktree already exists at {result['dir_path']}")
+        elif result["status"] == "error":
+            print(f"✗ Issue #{result['issue_num']}: Error - {result['error']}")
 
-    # Persist port to worktree config
-    set_worktree_port(dir_path, assigned_port)
+    # Print summary
+    print("\n" + "="*60)
+    print("SUMMARY")
+    print("="*60)
+    created = [r for r in results if r["status"] == "created"]
+    exists = [r for r in results if r["status"] == "exists"]
+    errors = [r for r in results if r["status"] == "error"]
 
-    # Bootstrap via .dux.yml (copy env, set PORT, install deps)
-    if not args.no_bootstrap:
-        bootstrap_worktree(dir_path, root, assigned_port, run_dev_server=args.run)
+    if created:
+        print(f"\n✓ Created {len(created)} worktree(s):")
+        for r in created:
+            print(f"  #{r['issue_num']}: {r['dir_path']}")
+            print(f"    Branch: {r['branch']}")
+            if r.get('port'):
+                print(f"    Port:   {r['port']}")
+            print(f"    PR:     {r['pr_url']}")
 
-    if args.code:
-        open_in_code(dir_path)
-    if args.claude:
-        open_with_ai_assistant(dir_path, "claude", issue_description, branch)
-    if args.codex:
-        open_with_ai_assistant(dir_path, "codex", issue_description, branch)
+    if exists:
+        print(f"\n○ Already exists ({len(exists)}):")
+        for r in exists:
+            print(f"  #{r['issue_num']}: {r['dir_path']}")
 
-    print("Worktree:", dir_path)
-    print("Branch:  ", branch)
-    print("Issue:   ", issue_url)
-    print("PR:      ", pr.get("url") if isinstance(pr, dict) else pr)
-    print("Assigned port:", assigned_port)
+    if errors:
+        print(f"\n✗ Errors ({len(errors)}):")
+        for r in errors:
+            print(f"  #{r['issue_num']}: {r['error']}")
 
 def cmd_clean(_args):
     root = repo_root()
@@ -563,7 +707,7 @@ def cmd_status(_args):
         pr_url = pr.get("url") if pr else "-"
         pr_state = pr.get("state") if pr else "none"
         dirty = "dirty" if run(["git", "status", "--porcelain"], cwd=path) else "clean"
-        port = read_worktree_port(path, cfg["env"]) if cfg else "-"
+        port = read_worktree_port(path, cfg.get("env", "")) if cfg else "-"
 
         # Check if tmux session exists for this branch
         tmux_indicator = "tmux" if branch in active_sessions else "-"
@@ -584,11 +728,7 @@ def main():
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     # init
-    p_init = sub.add_parser("init", help=f"Create {WT_FILENAME} boilerplate in repo root (no defaults)")
-    p_init.add_argument("--env", default=".env.local", help="Path to env file to copy into worktrees")
-    p_init.add_argument("--install", default="pnpm install", help="Deps install command")
-    p_init.add_argument("--run", dest="run", default="pnpm dev", help="Run command")
-    p_init.add_argument("--port", type=int, default=3000, help="Base port to use for allocation")
+    p_init = sub.add_parser("init", help=f"Create {WT_FILENAME} template in repo root with commented examples")
     p_init.add_argument("--force", action="store_true", help="Overwrite existing file")
     p_init.set_defaults(func=cmd_init)
 

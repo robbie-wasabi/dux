@@ -1,0 +1,15 @@
+# .dux.yml
+# Repo-local bootstrap configuration for worktrees.
+# All fields are optional. Uncomment and configure as needed.
+
+# Path to environment file to copy into worktrees
+# env: .env.local
+
+# Command to install dependencies
+# install: pnpm install
+
+# Command to run dev server
+# run: pnpm dev
+
+# Base port for automatic port allocation
+# port: 3000

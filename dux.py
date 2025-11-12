@@ -705,6 +705,25 @@ def cmd_clean(args):
             except Exception as e:
                 print(f"Error removing {branch}: {e}")
 
+def cmd_view(_args):
+    try:
+        branch = run(["git", "branch", "--show-current"])
+    except subprocess.CalledProcessError:
+        raise SystemExit("Error: not inside a git repository")
+
+    if not branch:
+        raise SystemExit("Error: unable to determine current branch")
+
+    pr = gh_pr_view_by_head(branch)
+    if not pr or not pr.get("url"):
+        raise SystemExit(f"No GitHub PR found for branch '{branch}'. Create one with 'gh pr create' or 'dux create'.")
+
+    print(f"Opening PR for branch '{branch}' -> {pr['url']}")
+    try:
+        run(["gh", "pr", "view", "--web", "--head", branch], capture=False)
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(f"Failed to open PR for branch '{branch}': {exc}") from exc
+
 def cmd_status(_args):
     root = repo_root()
     cfg = None
@@ -776,6 +795,10 @@ def main():
     p_clean = sub.add_parser("clean", help="Remove worktrees/branches whose PRs are merged")
     p_clean.add_argument("--all", action="store_true", help="Remove ALL worktrees (not just merged)")
     p_clean.set_defaults(func=cmd_clean)
+
+    # view
+    p_view = sub.add_parser("view", help="Open the current branch's PR in the browser")
+    p_view.set_defaults(func=cmd_view)
 
     args = parser.parse_args()
     args.func(args)

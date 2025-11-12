@@ -12,6 +12,7 @@ Each issue becomes its own branch, directory, and environment with an automatica
 * Copy and customize a `.env` file for each worktree.
 * Auto-assign a **unique free port** with no central registry.
 * Install dependencies and run setup commands per-repo using a minimal `.dux.yml`.
+* Pipe the issue context into Claude Code, Codex, or Factory AI Droid right from `dux create`.
 * Clean up merged branches and worktrees automatically.
 * No global state, no daemon — just pure Git + GitHub CLI.
 
@@ -213,6 +214,7 @@ dux create --new "Issue title"   # Create new issue
 * `--code` — Open worktree in VS Code after creation
 * `--claude` — Open Claude Code in tmux session with issue description
 * `--codex` — Open Codex in tmux session with issue description
+* `--droid` — Open Factory AI Droid in tmux session with issue description
 * `--run` — Start dev server after setup
 * `--ready` — Mark PR as ready for review (instead of draft)
 * `--no-bootstrap` — Skip `.dux.yml` setup (don't install deps or copy env)
@@ -221,8 +223,15 @@ dux create --new "Issue title"   # Create new issue
 **Example:**
 ```bash
 dux create 42 --claude           # Opens Claude Code in tmux
+dux create 42 --droid            # Opens Factory AI Droid in tmux
 dux create 42 --code --ready     # Opens VS Code, marks PR ready
 dux create --new "Add dark mode" --claude
+```
+
+Factory AI Droid CLI can be installed via:
+
+```bash
+curl -fsSL https://app.factory.ai/cli | sh
 ```
 
 ### `dux status`

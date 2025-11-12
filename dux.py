@@ -196,7 +196,7 @@ def open_in_tmux(dir_path: str, session_name: str, command: str = None):
         run(["tmux", "attach-session", "-t", session_name], check=True)
 
 def open_with_ai_assistant(dir_path: str, assistant: str, issue_description: str, branch: str):
-    """Open tmux session with Claude Code or Codex and pass the issue description."""
+    """Open tmux session with Claude Code, Codex, or Droid and pass the issue description."""
     # Write issue description to a temporary file to avoid shell escaping issues
     temp_file = Path(dir_path) / ".dux_issue.txt"
     temp_file.write_text(issue_description, encoding="utf-8")
@@ -205,6 +205,8 @@ def open_with_ai_assistant(dir_path: str, assistant: str, issue_description: str
         command = f'claude --dangerously-skip-permissions "$(cat {shlex.quote(str(temp_file))})"'
     elif assistant == "codex":
         command = f'codex --dangerously-bypass-approvals-and-sandbox "$(cat {shlex.quote(str(temp_file))})"'
+    elif assistant == "droid":
+        command = f'droid exec --auto medium --skip-permissions-unsafe "$(cat {shlex.quote(str(temp_file))})"'
     else:
         return
 
@@ -564,6 +566,8 @@ def cmd_create(args):
                 open_with_ai_assistant(dir_path, "claude", issue_description, branch)
             if args.codex:
                 open_with_ai_assistant(dir_path, "codex", issue_description, branch)
+            if args.droid:
+                open_with_ai_assistant(dir_path, "droid", issue_description, branch)
             print("Branch:  ", branch)
             print("Worktree:", dir_path)
             return
@@ -606,6 +610,8 @@ def cmd_create(args):
             open_with_ai_assistant(dir_path, "claude", issue_description, branch)
         if args.codex:
             open_with_ai_assistant(dir_path, "codex", issue_description, branch)
+        if args.droid:
+            open_with_ai_assistant(dir_path, "droid", issue_description, branch)
 
         print("Worktree:", dir_path)
         print("Branch:  ", branch)
@@ -757,6 +763,7 @@ def main():
     p_create.add_argument("--code", action="store_true", help="Open in VS Code")
     p_create.add_argument("--claude", action="store_true", help="Open Claude Code in tmux with issue description")
     p_create.add_argument("--codex", action="store_true", help="Open Codex in tmux with issue description")
+    p_create.add_argument("--droid", action="store_true", help="Open Factory AI Droid in tmux with issue description")
     p_create.add_argument("--run", action="store_true", help="Start dev server after setup")
     p_create.add_argument("--no-bootstrap", action="store_true", help="Skip .dux.yml bootstrap steps")
     p_create.set_defaults(func=cmd_create)

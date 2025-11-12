@@ -12,6 +12,7 @@ Each issue becomes its own branch, directory, and environment with an automatica
 * Copy and customize a `.env` file for each worktree.
 * Auto-assign a **unique free port** with no central registry.
 * Install dependencies and run setup commands per-repo using a minimal `.dux.yml`.
+* Pipe the issue context into Claude Code, Codex, or Factory AI Droid right from `dux create`.
 * Clean up merged branches and worktrees automatically.
 * No global state, no daemon — just pure Git + GitHub CLI.
 
@@ -227,6 +228,12 @@ dux create 42 --code --ready     # Opens VS Code, marks PR ready
 dux create --new "Add dark mode" --claude
 ```
 
+Factory AI Droid CLI can be installed via:
+
+```bash
+curl -fsSL https://app.factory.ai/cli | sh
+```
+
 ### `dux status`
 
 List all worktrees with their PR status, cleanliness, assigned ports, and active tmux sessions.
@@ -247,6 +254,17 @@ Remove worktrees and branches for PRs that have been merged.
 ```bash
 dux clean  # Removes all merged worktrees
 ```
+
+### `dux view`
+
+Open the current branch's GitHub PR in your default browser.
+
+**Usage:**
+```bash
+dux view  # Runs from anywhere inside the repo
+```
+
+If no PR exists for the current branch, a helpful error is displayed so you can create one with `gh pr create` or `dux create`.
 
 ---
 

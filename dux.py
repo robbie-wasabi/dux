@@ -206,7 +206,7 @@ def open_with_ai_assistant(dir_path: str, assistant: str, issue_description: str
     elif assistant == "codex":
         command = f'codex --dangerously-bypass-approvals-and-sandbox "$(cat {shlex.quote(str(temp_file))})"'
     elif assistant == "droid":
-        command = f'droid exec --auto medium --skip-permissions-unsafe "$(cat {shlex.quote(str(temp_file))})"'
+        command = f'droid exec --skip-permissions-unsafe "$(cat {shlex.quote(str(temp_file))})"'
     else:
         return
 

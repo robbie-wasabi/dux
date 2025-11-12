@@ -213,6 +213,7 @@ dux create --new "Issue title"   # Create new issue
 * `--code` — Open worktree in VS Code after creation
 * `--claude` — Open Claude Code in tmux session with issue description
 * `--codex` — Open Codex in tmux session with issue description
+* `--droid` — Open Droid (Factory AI) in tmux session with issue description
 * `--run` — Start dev server after setup
 * `--ready` — Mark PR as ready for review (instead of draft)
 * `--no-bootstrap` — Skip `.dux.yml` setup (don't install deps or copy env)
@@ -221,6 +222,7 @@ dux create --new "Issue title"   # Create new issue
 **Example:**
 ```bash
 dux create 42 --claude           # Opens Claude Code in tmux
+dux create 42 --droid            # Opens Droid (Factory AI) in tmux
 dux create 42 --code --ready     # Opens VS Code, marks PR ready
 dux create --new "Add dark mode" --claude
 ```
@@ -294,6 +296,50 @@ dux status
 ```bash
 dux clean
 # Automatically removes merged worktrees and branches
+```
+
+---
+
+## AI Assistant Integration
+
+**dux** integrates with multiple AI coding assistants to help you work on issues. When you use the assistant flags (`--claude`, `--codex`, or `--droid`), dux will:
+
+1. Create a `.dux_issue.txt` file in the worktree with the full issue description
+2. Open a tmux session with the AI assistant
+3. Pass the issue description to the assistant for autonomous work
+
+### Supported Assistants
+
+**Claude Code** (`--claude`)
+- Uses `claude --dangerously-skip-permissions` for autonomous operation
+- Installation: Follow instructions at [Claude Code](https://docs.claude.com/en/docs/claude-code)
+
+**Codex** (`--codex`)
+- Uses `codex --dangerously-bypass-approvals-and-sandbox` for autonomous operation
+- Installation: Follow instructions at [Codex](https://github.com/codex-ai/codex)
+
+**Droid (Factory AI)** (`--droid`)
+- Uses `droid exec --auto medium --skip-permissions-unsafe` for autonomous operation
+- Installation: `curl -fsSL https://app.factory.ai/cli | sh`
+- Documentation: [Factory AI Droid CLI](https://docs.factory.ai/cli/droid-exec/overview)
+
+### Examples
+
+**Single issue with AI assistant:**
+```bash
+dux create 123 --claude          # Opens Claude Code
+dux create 123 --codex           # Opens Codex
+dux create 123 --droid           # Opens Droid (Factory AI)
+```
+
+**Multiple issues with AI assistant:**
+```bash
+dux create 123,124,125 --claude  # Opens all in one tmux session with separate windows
+```
+
+**Combine with other flags:**
+```bash
+dux create 123 --droid --code    # Opens both Droid in tmux AND VS Code
 ```
 
 ---

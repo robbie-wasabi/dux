@@ -10,6 +10,17 @@ import subprocess
 from pathlib import Path
 
 # ----------------
+# ASCII Art
+# ----------------
+
+DUCK_ART = r"""
+       _
+     >(o )___
+      ( ._> /
+       `---'
+"""
+
+# ----------------
 # Utilities
 # ----------------
 
@@ -196,7 +207,7 @@ def open_in_tmux(dir_path: str, session_name: str, command: str = None):
         run(["tmux", "attach-session", "-t", session_name], check=True)
 
 def open_with_ai_assistant(dir_path: str, assistant: str, issue_description: str, branch: str):
-    """Open tmux session with Claude Code or Codex and pass the issue description."""
+    """Open tmux session with Claude Code, Codex, or Droid and pass the issue description."""
     # Write issue description to a temporary file to avoid shell escaping issues
     temp_file = Path(dir_path) / ".dux_issue.txt"
     temp_file.write_text(issue_description, encoding="utf-8")
@@ -205,6 +216,8 @@ def open_with_ai_assistant(dir_path: str, assistant: str, issue_description: str
         command = f'claude --dangerously-skip-permissions "$(cat {shlex.quote(str(temp_file))})"'
     elif assistant == "codex":
         command = f'codex --dangerously-bypass-approvals-and-sandbox "$(cat {shlex.quote(str(temp_file))})"'
+    elif assistant == "droid":
+        command = f'droid exec --auto medium --skip-permissions-unsafe "$(cat {shlex.quote(str(temp_file))})"'
     else:
         return
 
@@ -213,6 +226,75 @@ def open_with_ai_assistant(dir_path: str, assistant: str, issue_description: str
 
     print(f"Opening {assistant} with issue description...")
     open_in_tmux(dir_path, session_name, command)
+
+def open_multiple_with_ai_assistant(worktrees: list, assistant: str):
+    """Open multiple worktrees in a single tmux session with separate windows."""
+    if not worktrees:
+        return
+
+    # Create a session name based on timestamp
+    import time
+    session_name = f"dux-{int(time.time())}"
+
+    # Check if session already exists
+    try:
+        sessions_output = run(["tmux", "list-sessions", "-F", "#{session_name}"], check=False, capture=True)
+        existing_sessions = sessions_output.split('\n') if sessions_output else []
+        if session_name in existing_sessions:
+            print(f"Error: tmux session '{session_name}' already exists")
+            return
+    except subprocess.CalledProcessError:
+        pass
+
+    print(f"Creating tmux session with {len(worktrees)} windows...")
+
+    # Create first window (this creates the session)
+    first_wt = worktrees[0]
+    temp_file = Path(first_wt["dir_path"]) / ".dux_issue.txt"
+    temp_file.write_text(first_wt["issue_description"], encoding="utf-8")
+
+    if assistant == "claude":
+        command = f'claude --dangerously-skip-permissions "$(cat {shlex.quote(str(temp_file))})"'
+    elif assistant == "codex":
+        command = f'codex --dangerously-bypass-approvals-and-sandbox "$(cat {shlex.quote(str(temp_file))})"'
+    elif assistant == "droid":
+        command = f'droid exec --auto medium --skip-permissions-unsafe "$(cat {shlex.quote(str(temp_file))})"'
+    else:
+        return
+
+    # Create session with first window
+    run(["tmux", "new-session", "-d", "-s", session_name, "-c", first_wt["dir_path"], "-n", f"issue-{first_wt['issue_num']}"], check=True)
+    run(["tmux", "send-keys", "-t", f"{session_name}:0", command, "C-m"], check=True)
+    print(f"  Window 1: Issue #{first_wt['issue_num']}")
+
+    # Create additional windows for remaining worktrees
+    for idx, wt in enumerate(worktrees[1:], start=1):
+        temp_file = Path(wt["dir_path"]) / ".dux_issue.txt"
+        temp_file.write_text(wt["issue_description"], encoding="utf-8")
+
+        if assistant == "claude":
+            command = f'claude --dangerously-skip-permissions "$(cat {shlex.quote(str(temp_file))})"'
+        elif assistant == "codex":
+            command = f'codex --dangerously-bypass-approvals-and-sandbox "$(cat {shlex.quote(str(temp_file))})"'
+        elif assistant == "droid":
+            command = f'droid exec --auto medium --skip-permissions-unsafe "$(cat {shlex.quote(str(temp_file))})"'
+        else:
+            continue
+
+        # Create new window in existing session
+        run(["tmux", "new-window", "-t", session_name, "-c", wt["dir_path"], "-n", f"issue-{wt['issue_num']}"], check=True)
+        run(["tmux", "send-keys", "-t", f"{session_name}:{idx}", command, "C-m"], check=True)
+        print(f"  Window {idx + 1}: Issue #{wt['issue_num']}")
+
+    # Attach to session (or switch if already in tmux)
+    if os.environ.get("TMUX"):
+        print(f"\nSwitching to tmux session: {session_name}")
+        run(["tmux", "switch-client", "-t", session_name], check=True)
+    else:
+        print(f"\nAttaching to tmux session: {session_name}")
+        print(f"(Press Ctrl+b, then d to detach)")
+        print(f"(Press Ctrl+b, then n/p to navigate windows)")
+        run(["tmux", "attach-session", "-t", session_name], check=True)
 
 # ----------------
 # .dux.yml handling (no external deps)
@@ -241,6 +323,32 @@ def write_wt_example(path: Path, force: bool):
 """
     path.write_text(content, encoding="utf-8")
     return str(path)
+
+def update_gitignore(root: str):
+    """Add .wt to .gitignore if it exists and doesn't already contain it."""
+    gitignore_path = Path(root) / ".gitignore"
+
+    if not gitignore_path.exists():
+        return None
+
+    # Read existing .gitignore content
+    content = gitignore_path.read_text(encoding="utf-8")
+    lines = content.splitlines()
+
+    # Check if .wt is already in .gitignore
+    for line in lines:
+        stripped = line.strip()
+        if stripped == ".wt" or stripped == "/.wt":
+            return None  # Already exists
+
+    # Add .wt to .gitignore
+    if content and not content.endswith("\n"):
+        # Ensure there's a newline before adding
+        content += "\n"
+
+    content += ".wt\n"
+    gitignore_path.write_text(content, encoding="utf-8")
+    return str(gitignore_path)
 
 def parse_simple_yaml(path: Path) -> dict:
     if not path.exists():
@@ -412,6 +520,11 @@ def cmd_init(args):
     written = write_wt_example(path=path, force=args.force)
     print(f"Wrote {written}")
 
+    # Update .gitignore to include .wt directory
+    gitignore_updated = update_gitignore(root)
+    if gitignore_updated:
+        print(f"Updated {gitignore_updated} to include .wt")
+
 def process_single_issue(issue_num, root, base, args):
     """Process a single issue and create its worktree. Returns a dict with results."""
     try:
@@ -452,6 +565,7 @@ def process_single_issue(issue_num, root, base, args):
                 "branch": branch,
                 "dir_path": dir_path,
                 "issue_url": issue_url,
+                "issue_description": issue_description,
             }
 
         git_worktree_add(root, branch, dir_path, base)
@@ -496,6 +610,7 @@ def process_single_issue(issue_num, root, base, args):
             "issue_url": issue_url,
             "pr_url": pr.get("url") if isinstance(pr, dict) else pr,
             "port": assigned_port,
+            "issue_description": issue_description,
         }
     except Exception as e:
         return {
@@ -564,6 +679,8 @@ def cmd_create(args):
                 open_with_ai_assistant(dir_path, "claude", issue_description, branch)
             if args.codex:
                 open_with_ai_assistant(dir_path, "codex", issue_description, branch)
+            if args.droid:
+                open_with_ai_assistant(dir_path, "droid", issue_description, branch)
             print("Branch:  ", branch)
             print("Worktree:", dir_path)
             return
@@ -606,7 +723,10 @@ def cmd_create(args):
             open_with_ai_assistant(dir_path, "claude", issue_description, branch)
         if args.codex:
             open_with_ai_assistant(dir_path, "codex", issue_description, branch)
+        if args.droid:
+            open_with_ai_assistant(dir_path, "droid", issue_description, branch)
 
+        print(DUCK_ART)
         print("Worktree:", dir_path)
         print("Branch:  ", branch)
         print("Issue:   ", issue_url)
@@ -632,7 +752,8 @@ def cmd_create(args):
             print(f"✗ Issue #{result['issue_num']}: Error - {result['error']}")
 
     # Print summary
-    print("\n" + "="*60)
+    print(DUCK_ART)
+    print("="*60)
     print("SUMMARY")
     print("="*60)
     created = [r for r in results if r["status"] == "created"]
@@ -657,6 +778,19 @@ def cmd_create(args):
         print(f"\n✗ Errors ({len(errors)}):")
         for r in errors:
             print(f"  #{r['issue_num']}: {r['error']}")
+
+    # Open editors/assistants for successfully processed worktrees
+    worktrees_to_open = [r for r in results if r["status"] in ("created", "exists")]
+    if worktrees_to_open:
+        if args.code:
+            for r in worktrees_to_open:
+                open_in_code(r["dir_path"])
+        if args.claude:
+            open_multiple_with_ai_assistant(worktrees_to_open, "claude")
+        if args.codex:
+            open_multiple_with_ai_assistant(worktrees_to_open, "codex")
+        if args.droid:
+            open_multiple_with_ai_assistant(worktrees_to_open, "droid")
 
 def cmd_clean(args):
     root = repo_root()
@@ -687,7 +821,7 @@ def cmd_clean(args):
 
         if should_remove:
             try:
-                run(["git", "worktree", "remove", path], cwd=root)
+                run(["git", "worktree", "remove", "--force", path], cwd=root)
                 try:
                     run(["git", "branch", "-D", branch], cwd=root)
                 except subprocess.CalledProcessError:
@@ -757,6 +891,7 @@ def main():
     p_create.add_argument("--code", action="store_true", help="Open in VS Code")
     p_create.add_argument("--claude", action="store_true", help="Open Claude Code in tmux with issue description")
     p_create.add_argument("--codex", action="store_true", help="Open Codex in tmux with issue description")
+    p_create.add_argument("--droid", action="store_true", help="Open Droid (Factory AI) in tmux with issue description")
     p_create.add_argument("--run", action="store_true", help="Start dev server after setup")
     p_create.add_argument("--no-bootstrap", action="store_true", help="Skip .dux.yml bootstrap steps")
     p_create.set_defaults(func=cmd_create)

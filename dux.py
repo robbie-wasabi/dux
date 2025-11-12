@@ -98,6 +98,31 @@ def worktree_dir(root: str, branch: str) -> str:
     return str(Path(root) / ".wt" / branch)
 
 
+def branch_exists(root: str, branch: str) -> bool:
+    try:
+        run(["git", "rev-parse", "--verify", branch], cwd=root)
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
+def derive_context_branch(root: str, context: str, prefix: str = "work", word_limit: int = 5) -> str:
+    words = context.strip().split()
+    snippet = " ".join(words[:word_limit]) if words else ""
+    slug = slugify(snippet)
+    if not slug:
+        slug = "work"
+
+    base_branch = f"{prefix}/{slug}"
+    candidate = base_branch
+    suffix = 2
+    while branch_exists(root, candidate) or Path(worktree_dir(root, candidate)).exists():
+        candidate = f"{base_branch}-{suffix}"
+        suffix += 1
+
+    return candidate
+
+
 def git_worktree_add(root: str, branch: str, dir_path: str, base_branch: str):
     Path(dir_path).parent.mkdir(parents=True, exist_ok=True)
     # Check if branch already exists locally
@@ -206,9 +231,8 @@ def open_in_tmux(dir_path: str, session_name: str, command: str = None):
         print(f"(Press Ctrl+b, then d to detach)")
         run(["tmux", "attach-session", "-t", session_name], check=True)
 
-def open_with_ai_assistant(dir_path: str, assistant: str, issue_description: str, branch: str):
-    """Open tmux session with Claude Code, Codex, or Droid and pass the issue description."""
-    # Prepend worktree context to prevent AI from navigating to parent directories
+def compose_assistant_prompt(dir_path: str, branch: str, prompt: str, auto_start: bool) -> str:
+    """Combine worktree context with the user-provided prompt and optional instructions."""
     worktree_prefix = f"""IMPORTANT: You are working in a git worktree at: {dir_path}
 
 This is an isolated working directory for branch: {branch}
@@ -219,33 +243,49 @@ ALL your work should be done in the current directory: {dir_path}
 ---
 
 """
-    full_description = worktree_prefix + issue_description
+    full_prompt = worktree_prefix + prompt
+    if not auto_start:
+        full_prompt += "\n\nPlease review the context above and wait for explicit instructions before making changes."
+    return full_prompt
 
+
+def build_assistant_command(assistant: str, prompt: str) -> str | None:
+    quoted = shlex.quote(prompt)
     if assistant == "claude":
-        command = f'claude --dangerously-skip-permissions {shlex.quote(full_description)}'
-    elif assistant == "codex":
-        command = f'codex --dangerously-bypass-approvals-and-sandbox {shlex.quote(full_description)}'
-    elif assistant == "droid":
-        command = f'droid exec --skip-permissions-unsafe {shlex.quote(full_description)}'
-    else:
+        return f"claude --dangerously-skip-permissions {quoted}"
+    if assistant == "codex":
+        return f"codex --dangerously-bypass-approvals-and-sandbox {quoted}"
+    if assistant == "droid":
+        return f"droid exec --skip-permissions-unsafe {quoted}"
+    return None
+
+
+def tmux_window_name(label: str, fallback: str) -> str:
+    cleaned = slugify(label)
+    return cleaned or fallback
+
+
+def open_with_ai_assistant(dir_path: str, assistant: str, prompt: str, branch: str, auto_start: bool):
+    """Open tmux session with Claude Code, Codex, or Droid and pass the prepared prompt."""
+    full_prompt = compose_assistant_prompt(dir_path, branch, prompt, auto_start)
+    command = build_assistant_command(assistant, full_prompt)
+    if not command:
         return
 
-    # Use branch name as tmux session name
     session_name = branch
-
-    print(f"Opening {assistant} with issue description...")
+    print(f"Opening {assistant} for {branch}...")
     open_in_tmux(dir_path, session_name, command)
 
-def open_multiple_with_ai_assistant(worktrees: list, assistant: str):
+
+def open_multiple_with_ai_assistant(worktrees: list, assistant: str, auto_start: bool):
     """Open multiple worktrees in a single tmux session with separate windows."""
     if not worktrees:
         return
 
-    # Create a session name based on timestamp
     import time
+
     session_name = f"dux-{int(time.time())}"
 
-    # Check if session already exists
     try:
         sessions_output = run(["tmux", "list-sessions", "-F", "#{session_name}"], check=False, capture=True)
         existing_sessions = sessions_output.split('\n') if sessions_output else []
@@ -257,66 +297,32 @@ def open_multiple_with_ai_assistant(worktrees: list, assistant: str):
 
     print(f"Creating tmux session with {len(worktrees)} windows...")
 
-    # Create first window (this creates the session)
-    first_wt = worktrees[0]
-
-    # Prepend worktree context
-    worktree_prefix = f"""IMPORTANT: You are working in a git worktree at: {first_wt["dir_path"]}
-
-This is an isolated working directory for branch: {first_wt.get("branch", "N/A")}
-
-DO NOT navigate to parent directories or try to find the "repo root".
-ALL your work should be done in the current directory: {first_wt["dir_path"]}
-
----
-
-"""
-    full_description = worktree_prefix + first_wt["issue_description"]
-
-    if assistant == "claude":
-        command = f'claude --dangerously-skip-permissions {shlex.quote(full_description)}'
-    elif assistant == "codex":
-        command = f'codex --dangerously-bypass-approvals-and-sandbox {shlex.quote(full_description)}'
-    elif assistant == "droid":
-        command = f'droid exec --skip-permissions-unsafe {shlex.quote(full_description)}'
-    else:
+    first = worktrees[0]
+    first_branch = first.get("branch", "N/A")
+    first_prompt = compose_assistant_prompt(first["dir_path"], first_branch, first.get("assistant_prompt", ""), auto_start)
+    command = build_assistant_command(assistant, first_prompt)
+    if not command:
         return
 
-    # Create session with first window
-    run(["tmux", "new-session", "-d", "-s", session_name, "-c", first_wt["dir_path"], "-n", f"issue-{first_wt['issue_num']}"], check=True)
+    first_label = first.get("assistant_label") or first_branch or "worktree"
+    window_name = tmux_window_name(first_label, "worktree")
+    run(["tmux", "new-session", "-d", "-s", session_name, "-c", first["dir_path"], "-n", window_name], check=True)
     run(["tmux", "send-keys", "-t", f"{session_name}:0", command, "C-m"], check=True)
-    print(f"  Window 1: Issue #{first_wt['issue_num']}")
+    print(f"  Window 1: {first_label}")
 
-    # Create additional windows for remaining worktrees
     for idx, wt in enumerate(worktrees[1:], start=1):
-        # Prepend worktree context
-        worktree_prefix = f"""IMPORTANT: You are working in a git worktree at: {wt["dir_path"]}
-
-This is an isolated working directory for branch: {wt.get("branch", "N/A")}
-
-DO NOT navigate to parent directories or try to find the "repo root".
-ALL your work should be done in the current directory: {wt["dir_path"]}
-
----
-
-"""
-        full_description = worktree_prefix + wt["issue_description"]
-
-        if assistant == "claude":
-            command = f'claude --dangerously-skip-permissions {shlex.quote(full_description)}'
-        elif assistant == "codex":
-            command = f'codex --dangerously-bypass-approvals-and-sandbox {shlex.quote(full_description)}'
-        elif assistant == "droid":
-            command = f'droid exec --skip-permissions-unsafe {shlex.quote(full_description)}'
-        else:
+        wt_branch = wt.get("branch", "N/A")
+        wt_prompt = compose_assistant_prompt(wt["dir_path"], wt_branch, wt.get("assistant_prompt", ""), auto_start)
+        command = build_assistant_command(assistant, wt_prompt)
+        if not command:
             continue
 
-        # Create new window in existing session
-        run(["tmux", "new-window", "-t", session_name, "-c", wt["dir_path"], "-n", f"issue-{wt['issue_num']}"], check=True)
+        wt_label = wt.get("assistant_label") or wt_branch or f"window-{idx + 1}"
+        window_name = tmux_window_name(wt_label, f"window-{idx + 1}")
+        run(["tmux", "new-window", "-t", session_name, "-c", wt["dir_path"], "-n", window_name], check=True)
         run(["tmux", "send-keys", "-t", f"{session_name}:{idx}", command, "C-m"], check=True)
-        print(f"  Window {idx + 1}: Issue #{wt['issue_num']}")
+        print(f"  Window {idx + 1}: {wt_label}")
 
-    # Attach to session (or switch if already in tmux)
     if os.environ.get("TMUX"):
         print(f"\nSwitching to tmux session: {session_name}")
         run(["tmux", "switch-client", "-t", session_name], check=True)
@@ -325,8 +331,6 @@ ALL your work should be done in the current directory: {wt["dir_path"]}
         print(f"(Press Ctrl+b, then d to detach)")
         print(f"(Press Ctrl+b, then n/p to navigate windows)")
         run(["tmux", "attach-session", "-t", session_name], check=True)
-
-# ----------------
 # .dux.yml handling (no external deps)
 # ----------------
 
@@ -422,6 +426,26 @@ def parse_worktrees(root: str):
     if current:
         worktrees.append(current)
     return worktrees
+
+
+def find_existing_worktree_path(root: str, branch: str, desired_path: str) -> str | None:
+    desired = Path(desired_path)
+    if desired.exists():
+        return desired_path
+
+    try:
+        worktrees = parse_worktrees(root)
+        for wt in worktrees:
+            wt_path = wt.get("path")
+            wt_branch = wt.get("branch")
+            if not wt_path or not wt_branch:
+                continue
+            if Path(wt_path).exists() and (wt_path == desired_path or wt_branch == branch):
+                return wt_path
+    except Exception:
+        pass
+
+    return None
 
 def read_worktree_port(path: str, env_key: str) -> int | None:
     # 1) explicit per-worktree git config
@@ -555,47 +579,49 @@ def cmd_init(args):
     if gitignore_updated:
         print(f"Updated {gitignore_updated} to include .wt")
 
-def process_single_issue(issue_num, root, base, args):
-    """Process a single issue and create its worktree. Returns a dict with results."""
+
+def process_single_issue(issue_num, root, base, args, context: str, issue_data=None):
+    """Process a single GitHub issue and create or reuse its worktree."""
     try:
-        issue = gh_issue_view(issue_num)
+        issue = issue_data or gh_issue_view(issue_num)
         num = issue["number"]
         title = issue["title"]
         issue_url = issue["url"]
         body = issue.get("body", "")
-        branch = f"issue/{num}-{slugify(title)}"
+        title_words = title.strip().split()
+        limited_title = " ".join(title_words[:5]) if title_words else ""
+        limited_slug = slugify(limited_title) if limited_title else ""
+        full_slug = slugify(title)
+        branch_slug = limited_slug or full_slug
+        branch = f"issue/{num}-{branch_slug}"
         dir_path = worktree_dir(root, branch)
 
-        # Prepare issue description for AI assistants
-        issue_description = f"Issue #{num}: {title}\n\n{body}\n\nIssue URL: {issue_url}"
+        existing_path = find_existing_worktree_path(root, branch, dir_path)
 
-        # Check if worktree already exists (check both directory and git worktree list)
-        worktree_exists = False
-        if Path(dir_path).exists():
-            worktree_exists = True
-        else:
-            # Also check if it's in git worktree list
-            try:
-                worktrees = parse_worktrees(root)
-                for wt in worktrees:
-                    wt_path = wt.get("path")
-                    if wt_path == dir_path or wt.get("branch") == branch:
-                        # Verify the path actually exists
-                        if Path(wt_path).exists():
-                            worktree_exists = True
-                            dir_path = wt_path  # Use the actual path
-                        break
-            except Exception:
-                pass
+        if not existing_path and full_slug and branch_slug != full_slug:
+            legacy_branch = f"issue/{num}-{full_slug}"
+            legacy_path = worktree_dir(root, legacy_branch)
+            legacy_existing = find_existing_worktree_path(root, legacy_branch, legacy_path)
+            if legacy_existing:
+                branch = legacy_branch
+                dir_path = worktree_dir(root, branch)
+                existing_path = legacy_existing
 
-        if worktree_exists:
+        assistant_prompt = f"Issue #{num}: {title}\n\n{body}\n\nIssue URL: {issue_url}"
+        if context:
+            assistant_prompt += f"\n\nAdditional context from request:\n{context}"
+
+        label = f"Issue #{num}"
+
+        if existing_path:
             return {
                 "issue_num": num,
                 "status": "exists",
                 "branch": branch,
-                "dir_path": dir_path,
+                "dir_path": existing_path,
                 "issue_url": issue_url,
-                "issue_description": issue_description,
+                "assistant_prompt": assistant_prompt,
+                "assistant_label": label,
             }
 
         git_worktree_add(root, branch, dir_path, base)
@@ -609,15 +635,14 @@ def process_single_issue(issue_num, root, base, args):
                     base_branch=base,
                     head_branch=branch,
                     title=f"[#{num}] {title}",
-                    body=f"Tracking {issue_url}\\n\\nCloses #{num}",
-                    draft=not args.ready
+                    body=f"Tracking {issue_url}\n\nCloses #{num}",
+                    draft=not args.ready,
                 )
             except subprocess.CalledProcessError:
                 pr = gh_pr_view_by_head(branch)
                 if not pr:
                     pr = {"url": "N/A", "state": "unknown"}
 
-        # Allocate a port deterministically without a registry - if port configured
         cfg = parse_simple_yaml(Path(root) / WT_FILENAME)
         assigned_port = None
         if cfg.get("port"):
@@ -625,12 +650,12 @@ def process_single_issue(issue_num, root, base, args):
             env_key = cfg.get("env", "")
             used = used_ports(root, env_key)
             assigned_port = allocate_port(branch, base_port, used)
-            # Persist port to worktree config
             set_worktree_port(dir_path, assigned_port)
 
-        # Bootstrap via .dux.yml (copy env, set PORT, install deps)
         if not args.no_bootstrap:
             bootstrap_worktree(dir_path, root, assigned_port, run_dev_server=args.run)
+
+        pr_url = pr.get("url") if isinstance(pr, dict) else pr
 
         return {
             "issue_num": num,
@@ -638,102 +663,40 @@ def process_single_issue(issue_num, root, base, args):
             "branch": branch,
             "dir_path": dir_path,
             "issue_url": issue_url,
-            "pr_url": pr.get("url") if isinstance(pr, dict) else pr,
+            "pr_url": pr_url,
             "port": assigned_port,
-            "issue_description": issue_description,
+            "assistant_prompt": assistant_prompt,
+            "assistant_label": label,
         }
     except Exception as e:
         return {
             "issue_num": issue_num,
             "status": "error",
             "error": str(e),
+            "assistant_label": f"Issue #{issue_num}",
         }
 
-def cmd_create(args):
-    root = repo_root()
-    base = args.base or get_default_branch()
-    ensure_base_up_to_date(base)
 
-    # Clean up stale worktrees (registered in git but directory doesn't exist)
+def create_context_worktree(context: str, root: str, base: str, args):
+    branch = derive_context_branch(root, context)
+    dir_path = worktree_dir(root, branch)
+    assistant_prompt = f"Task context:\n{context}\n\nThere is no linked GitHub issue for this worktree."
+    label = branch
+
+    existing_path = find_existing_worktree_path(root, branch, dir_path)
+    if existing_path:
+        return {
+            "status": "exists",
+            "branch": branch,
+            "dir_path": existing_path,
+            "assistant_prompt": assistant_prompt,
+            "assistant_label": label,
+        }
+
     try:
-        run(["git", "worktree", "prune"], cwd=root, check=False)
-    except Exception:
-        pass
-
-    # Parse issue numbers from comma-separated list
-    issue_numbers = []
-    if args.new:
-        # Create a new issue
-        issue = gh_issue_create(args.new, "Auto-created for worktree.")
-        issue_numbers = [str(issue["number"])]
-    else:
-        # Split comma-separated issue numbers
-        issue_numbers = [num.strip() for num in args.issue.split(",")]
-
-    # Process single issue (legacy behavior)
-    if len(issue_numbers) == 1:
-        issue_num = issue_numbers[0]
-        issue = gh_issue_view(issue_num)
-        num = issue["number"]
-        title = issue["title"]
-        issue_url = issue["url"]
-        body = issue.get("body", "")
-        branch = f"issue/{num}-{slugify(title)}"
-        dir_path = worktree_dir(root, branch)
-
-        # Prepare issue description for AI assistants
-        issue_description = f"Issue #{num}: {title}\n\n{body}\n\nIssue URL: {issue_url}"
-
-        # Check if worktree already exists
-        worktree_exists = False
-        if Path(dir_path).exists():
-            worktree_exists = True
-        else:
-            try:
-                worktrees = parse_worktrees(root)
-                for wt in worktrees:
-                    wt_path = wt.get("path")
-                    if wt_path == dir_path or wt.get("branch") == branch:
-                        if Path(wt_path).exists():
-                            worktree_exists = True
-                            dir_path = wt_path
-                        break
-            except Exception:
-                pass
-
-        if worktree_exists:
-            print(f"Worktree already exists at: {dir_path}")
-            if args.code:
-                open_in_code(dir_path)
-            if args.claude:
-                open_with_ai_assistant(dir_path, "claude", issue_description, branch)
-            if args.codex:
-                open_with_ai_assistant(dir_path, "codex", issue_description, branch)
-            if args.droid:
-                open_with_ai_assistant(dir_path, "droid", issue_description, branch)
-            print("Branch:  ", branch)
-            print("Worktree:", dir_path)
-            return
-
         git_worktree_add(root, branch, dir_path, base)
         push_set_upstream(dir_path, branch)
-        empty_commit_if_needed(dir_path, f"chore: start {branch} (#{num})")
-
-        pr = gh_pr_view_by_head(branch)
-        if not pr:
-            try:
-                pr = gh_pr_create(
-                    base_branch=base,
-                    head_branch=branch,
-                    title=f"[#{num}] {title}",
-                    body=f"Tracking {issue_url}\\n\\nCloses #{num}",
-                    draft=not args.ready
-                )
-            except subprocess.CalledProcessError:
-                pr = gh_pr_view_by_head(branch)
-                if not pr:
-                    print("Warning: Could not create or find PR")
-                    pr = {"url": "N/A", "state": "unknown"}
+        empty_commit_if_needed(dir_path, f"chore: start {branch}")
 
         cfg = parse_simple_yaml(Path(root) / WT_FILENAME)
         assigned_port = None
@@ -747,80 +710,202 @@ def cmd_create(args):
         if not args.no_bootstrap:
             bootstrap_worktree(dir_path, root, assigned_port, run_dev_server=args.run)
 
-        if args.code:
-            open_in_code(dir_path)
-        if args.claude:
-            open_with_ai_assistant(dir_path, "claude", issue_description, branch)
-        if args.codex:
-            open_with_ai_assistant(dir_path, "codex", issue_description, branch)
-        if args.droid:
-            open_with_ai_assistant(dir_path, "droid", issue_description, branch)
+        return {
+            "status": "created",
+            "branch": branch,
+            "dir_path": dir_path,
+            "port": assigned_port,
+            "assistant_prompt": assistant_prompt,
+            "assistant_label": label,
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "branch": branch,
+            "assistant_label": label,
+        }
 
-        print(DUCK_ART)
-        print("Worktree:", dir_path)
-        print("Branch:  ", branch)
-        print("Issue:   ", issue_url)
-        print("PR:      ", pr.get("url") if isinstance(pr, dict) else pr)
-        if assigned_port:
-            print("Assigned port:", assigned_port)
+
+def open_requested_tools(entries: list, args, auto_start: bool):
+    ready = [entry for entry in entries if entry.get("status") in ("created", "exists")]
+    if not ready:
         return
 
-    # Process multiple issues sequentially
-    print(f"Processing {len(issue_numbers)} issues...")
-    results = []
+    if args.code:
+        for entry in ready:
+            open_in_code(entry["dir_path"])
 
-    for issue_num in issue_numbers:
-        result = process_single_issue(issue_num, root, base, args)
-        results.append(result)
+    def _open_single(entry, tool: str):
+        open_with_ai_assistant(
+            entry["dir_path"],
+            tool,
+            entry.get("assistant_prompt", ""),
+            entry.get("branch", "worktree"),
+            auto_start,
+        )
 
-        # Print progress
-        if result["status"] == "created":
-            print(f"✓ Issue #{result['issue_num']}: Created worktree at {result['dir_path']}")
-        elif result["status"] == "exists":
-            print(f"○ Issue #{result['issue_num']}: Worktree already exists at {result['dir_path']}")
-        elif result["status"] == "error":
-            print(f"✗ Issue #{result['issue_num']}: Error - {result['error']}")
+    def _open_many(tool: str):
+        open_multiple_with_ai_assistant(ready, tool, auto_start)
 
-    # Print summary
+    if args.claude:
+        if len(ready) == 1:
+            _open_single(ready[0], "claude")
+        else:
+            _open_many("claude")
+
+    if args.codex:
+        if len(ready) == 1:
+            _open_single(ready[0], "codex")
+        else:
+            _open_many("codex")
+
+    if args.droid:
+        if len(ready) == 1:
+            _open_single(ready[0], "droid")
+        else:
+            _open_many("droid")
+
+
+def handle_single_result(result: dict, args, auto_start: bool):
+    status = result.get("status")
+    if status == "error":
+        raise SystemExit(f"Error: {result.get('error', 'unknown error')}")
+
+    if status == "exists":
+        print(f"Worktree already exists at: {result['dir_path']}")
+        print("Branch:  ", result["branch"])
+        if result.get("issue_url"):
+            print("Issue:   ", result["issue_url"])
+        open_requested_tools([result], args, auto_start)
+        return
+
+    if status == "created":
+        print(DUCK_ART)
+        print("Worktree:", result["dir_path"])
+        print("Branch:  ", result["branch"])
+        if result.get("issue_url"):
+            print("Issue:   ", result["issue_url"])
+        if result.get("pr_url"):
+            print("PR:      ", result["pr_url"])
+        if result.get("port"):
+            print("Assigned port:", result["port"])
+        open_requested_tools([result], args, auto_start)
+        return
+
+    raise SystemExit("Unexpected result state")
+
+
+def handle_multi_results(results: list, args, auto_start: bool):
     print(DUCK_ART)
-    print("="*60)
+    print("=" * 60)
     print("SUMMARY")
-    print("="*60)
-    created = [r for r in results if r["status"] == "created"]
-    exists = [r for r in results if r["status"] == "exists"]
-    errors = [r for r in results if r["status"] == "error"]
+    print("=" * 60)
+
+    created = [r for r in results if r.get("status") == "created"]
+    exists = [r for r in results if r.get("status") == "exists"]
+    errors = [r for r in results if r.get("status") == "error"]
 
     if created:
         print(f"\n✓ Created {len(created)} worktree(s):")
         for r in created:
-            print(f"  #{r['issue_num']}: {r['dir_path']}")
+            label = r.get("assistant_label", r.get("branch", "worktree"))
+            print(f"  {label}: {r['dir_path']}")
             print(f"    Branch: {r['branch']}")
-            if r.get('port'):
+            if r.get("issue_url"):
+                print(f"    Issue:  {r['issue_url']}")
+            if r.get("pr_url"):
+                print(f"    PR:     {r['pr_url']}")
+            if r.get("port"):
                 print(f"    Port:   {r['port']}")
-            print(f"    PR:     {r['pr_url']}")
 
     if exists:
         print(f"\n○ Already exists ({len(exists)}):")
         for r in exists:
-            print(f"  #{r['issue_num']}: {r['dir_path']}")
+            label = r.get("assistant_label", r.get("branch", "worktree"))
+            print(f"  {label}: {r['dir_path']}")
 
     if errors:
         print(f"\n✗ Errors ({len(errors)}):")
         for r in errors:
-            print(f"  #{r['issue_num']}: {r['error']}")
+            label = r.get("assistant_label", r.get("branch", "worktree"))
+            print(f"  {label}: {r.get('error', 'unknown error')}")
 
-    # Open editors/assistants for successfully processed worktrees
-    worktrees_to_open = [r for r in results if r["status"] in ("created", "exists")]
-    if worktrees_to_open:
-        if args.code:
-            for r in worktrees_to_open:
-                open_in_code(r["dir_path"])
-        if args.claude:
-            open_multiple_with_ai_assistant(worktrees_to_open, "claude")
-        if args.codex:
-            open_multiple_with_ai_assistant(worktrees_to_open, "codex")
-        if args.droid:
-            open_multiple_with_ai_assistant(worktrees_to_open, "droid")
+    open_requested_tools(created + exists, args, auto_start)
+
+    if errors:
+        print("\nOne or more worktrees failed. See errors above.")
+
+
+def cmd_create(args):
+    root = repo_root()
+    base = args.base or get_default_branch()
+    ensure_base_up_to_date(base)
+
+    try:
+        run(["git", "worktree", "prune"], cwd=root, check=False)
+    except Exception:
+        pass
+
+    context_words = getattr(args, "context", [])
+    context = " ".join(context_words).strip()
+
+    if args.new and args.issue:
+        raise SystemExit("--new cannot be used together with --issue")
+
+    if not context:
+        if args.new:
+            context = args.new.strip()
+        elif args.issue:
+            context = ""
+        else:
+            raise SystemExit("Context is required for `create` when no issue is specified.")
+
+    issue_numbers = []
+    prefetched = {}
+
+    if args.new:
+        issue = gh_issue_create(args.new, context or "Auto-created for worktree.")
+        issue_number = str(issue["number"])
+        issue_numbers = [issue_number]
+        prefetched[issue_number] = issue
+    elif args.issue:
+        issue_numbers = [num.strip() for num in args.issue.split(",") if num.strip()]
+        if not issue_numbers:
+            raise SystemExit("--issue requires at least one issue number")
+
+    auto_start = bool(args.start)
+
+    if issue_numbers:
+        if len(issue_numbers) == 1:
+            issue_num = issue_numbers[0]
+            issue_data = prefetched.get(issue_num)
+            result = process_single_issue(issue_num, root, base, args, context, issue_data=issue_data)
+            handle_single_result(result, args, auto_start)
+            return
+
+        print(f"Processing {len(issue_numbers)} issues...")
+        results = []
+        for issue_num in issue_numbers:
+            issue_data = prefetched.get(issue_num)
+            result = process_single_issue(issue_num, root, base, args, context, issue_data=issue_data)
+            results.append(result)
+
+            label = result.get("assistant_label", f"Issue #{issue_num}")
+            status = result.get("status")
+            if status == "created":
+                print(f"✓ {label}: Created worktree at {result['dir_path']}")
+            elif status == "exists":
+                print(f"○ {label}: Worktree already exists at {result['dir_path']}")
+            else:
+                print(f"✗ {label}: Error - {result.get('error', 'unknown error')}")
+
+        handle_multi_results(results, args, auto_start)
+        return
+
+    result = create_context_worktree(context, root, base, args)
+    handle_single_result(result, args, auto_start)
+
 
 def cmd_clean(args):
     root = repo_root()
@@ -932,8 +1017,9 @@ def main():
     p_init.set_defaults(func=cmd_init)
 
     # create
-    p_create = sub.add_parser("create", help="Create worktree for an existing issue or a new issue title")
-    p_create.add_argument("issue", nargs="?", help="Existing GitHub issue number (omit with --new)")
+    p_create = sub.add_parser("create", help="Create a worktree from context with optional GitHub issue linkage")
+    p_create.add_argument("context", nargs="*", help="Short description or context for the worktree")
+    p_create.add_argument("--issue", help="Comma-separated GitHub issue number(s) to link to this worktree")
     p_create.add_argument("--new", metavar="TITLE", help="Create a new issue with this title")
     p_create.add_argument("--base", default=get_default_branch(), help="Base branch (auto-detected; override)")
     p_create.add_argument("--ready", action="store_true", help="Open PR as ready (not draft)")
@@ -943,6 +1029,7 @@ def main():
     p_create.add_argument("--droid", action="store_true", help="Open Factory AI Droid in tmux with issue description")
     p_create.add_argument("--run", action="store_true", help="Start dev server after setup")
     p_create.add_argument("--no-bootstrap", action="store_true", help="Skip .dux.yml bootstrap steps")
+    p_create.add_argument("--start", action="store_true", help="Automatically start the chosen coding assistant")
     p_create.set_defaults(func=cmd_create)
 
     # status

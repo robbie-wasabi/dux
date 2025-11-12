@@ -78,17 +78,13 @@ sudo mv dux.py /usr/local/bin/dux
 
 ### 1 — Initialize the repo
 
-Create a `.dux.yml` defining how to bootstrap each worktree:
+Scaffold a `.dux.yml` template and then edit it to match your project:
 
 ```bash
-dux init \
-  --env .env.local \
-  --install "pnpm install" \
-  --run "pnpm dev" \
-  --port 3000
+dux init
 ```
 
-Resulting `.dux.yml`:
+Example configuration:
 
 ```yaml
 env: .env.local      # Path to env file to copy into each worktree
@@ -97,27 +93,29 @@ run: pnpm dev        # Command to start dev server (for reference)
 port: 3000           # Base port for automatic allocation
 ```
 
-**Note:** The `.dux.yml` file should be committed to your repo so all team members use the same configuration.
+**Tip:** Use `dux init --force` to overwrite an existing template if you need to regenerate it. Commit `.dux.yml` so the whole team shares the same bootstrap settings.
 
 ### 2 — Create a worktree for an existing issue
 
 ```bash
-dux create 342 --code
+dux create "Investigate login redirect" --issue 342 --code
+# or simply
+dux create --issue 342 --code
 ```
 
-This will create a worktree for GitHub issue #342.
+When no context string is provided alongside `--issue`, dux reuses the issue title (up to the first five words) to name the branch/worktree and seed prompts automatically.
 
 ### 3 — Or start a new issue + worktree
 
 ```bash
-dux create --new "Refactor parser module" --code
+dux create "Refactor parser module" --new "Refactor parser module" --code
 ```
 
-This will create a new GitHub issue and immediately set up a worktree for it.
+This creates a new GitHub issue with the given title and immediately sets up a worktree for it.
 
 **What happens when you create a worktree:**
 
-1. Creates a branch named `issue/<number>-<slugified-title>` (e.g., `issue/342-refactor-parser-module`)
+1. Creates a branch named `issue/<number>-<slugified-title>` using the first five words of the issue title (e.g., `issue/342-refactor-parser-module`)
 2. Adds a worktree under `.wt/issue/<number>-<slugified-title>`
 3. Copies your `.env` file (e.g., `.env.local`) into the worktree
 4. Assigns a unique free port (e.g., `PORT=3001`) based on branch name hash
@@ -153,7 +151,7 @@ Each worktree is completely isolated:
 
 When you're done, simply merge your PR and run `dux clean` to remove the worktree.
 
-**Note:** If a worktree already exists for an issue, simply `cd` into the existing directory. Running `dux create` again for the same issue may cause conflicts.
+**Note:** If a worktree already exists for an issue, simply `cd` into the existing directory. Running `dux create` with the same `--issue` will reconnect you to the existing worktree instead of creating a duplicate.
 
 ---
 
@@ -186,46 +184,48 @@ This shows each worktree's branch, PR status, cleanliness, and assigned port.
 
 ### `dux init`
 
-Generate a `.dux.yml` configuration file in your repo root.
+Generate a `.dux.yml` template in your repo root. Edit the file after generation to set `env`, `install`, `run`, and `port` values for your project.
 
 **Flags:**
-* `--env <path>` — Path to env file to copy (default: `.env.local`)
-* `--install <cmd>` — Dependency install command (default: `pnpm install`)
-* `--run <cmd>` — Dev server command (default: `pnpm dev`)
-* `--port <number>` — Base port for allocation (default: `3000`)
-* `--force` — Overwrite existing `.dux.yml`
+* `--force` — Overwrite an existing `.dux.yml`
 
 **Example:**
 ```bash
-dux init --env .env --install "npm ci" --run "npm start" --port 4000
+dux init
 ```
 
 ### `dux create`
 
-Create a worktree for an existing GitHub issue or create a new issue.
+Create a worktree from contextual instructions, optionally linking to GitHub issues.
 
 **Usage:**
 ```bash
-dux create [ISSUE#]              # Use existing issue
-dux create --new "Issue title"   # Create new issue
+dux create "Quick summary of the work" --issue 123          # Link to existing issue(s)
+dux create "Exploratory spike" --new "Spike: try new API"   # Open a new issue first
+dux create "Scratch notes for pairing session"              # Context-only worktree
 ```
 
+If you omit the leading context when using `--issue` or `--new`, dux automatically reuses the issue title (up to five words) for naming and prompts.
+
 **Flags:**
+* `--issue <numbers>` — Link one or more issue numbers (comma-separated)
+* `--new <title>` — Create a new GitHub issue with the provided title
+* `--base <branch>` — Override the detected default branch
+* `--ready` — Mark PR as ready for review instead of draft
 * `--code` — Open worktree in VS Code after creation
 * `--claude` — Open Claude Code in tmux session with issue description
 * `--codex` — Open Codex in tmux session with issue description
 * `--droid` — Open Droid (Factory AI) in tmux session with issue description
 * `--run` — Start dev server after setup
-* `--ready` — Mark PR as ready for review (instead of draft)
 * `--no-bootstrap` — Skip `.dux.yml` setup (don't install deps or copy env)
-* `--base <branch>` — Override the detected default branch
+* `--start` — Automatically trigger the selected coding assistant inside tmux
 
 **Example:**
 ```bash
-dux create 42 --claude           # Opens Claude Code in tmux
-dux create 42 --droid            # Opens Droid (Factory AI) in tmux
-dux create 42 --code --ready     # Opens VS Code, marks PR ready
-dux create --new "Add dark mode" --claude
+dux create "Investigate 500 on login" --issue 42 --claude
+dux create "Pay down tech debt" --issue 104,105 --droid --start
+dux create "Draft accessibility audit" --new "Accessibility audit" --code --ready
+dux create "Pairing scratchpad"  # No GitHub issue, just a dedicated worktree
 ```
 
 Factory AI Droid CLI can be installed via:
@@ -239,7 +239,7 @@ curl -fsSL https://app.factory.ai/cli | sh
 List all worktrees with their PR status, cleanliness, assigned ports, and active tmux sessions.
 
 **Example output:**
-```
+```bash
 issue/342-refactor-parser  clean  DRAFT    3001 tmux https://github.com/...
   /path/to/repo/.wt/issue/342-refactor-parser
 ```
@@ -273,23 +273,26 @@ If no PR exists for the current branch, a helpful error is displayed so you can 
 **First time setup:**
 ```bash
 cd my-repo
-dux init --install "npm ci" --run "npm start" --port 4000
-# Creates .dux.yml in repo root
+dux init
+# Edit .dux.yml to set env/install/run/port
 ```
 
 **Start working on an issue:**
 ```bash
 # Create worktree for existing issue #123
-dux create 123 --code
+dux create "Investigate payment failure" --issue 123 --code
 
 # Or create a new issue and worktree
-dux create --new "Add OAuth login" --code
+dux create "Plan OAuth rollout" --new "Add OAuth login" --code
+
+# Or spin up scratch work without a GitHub issue
+dux create "Prototype new dashboard layout"
 ```
 
 **Work in isolation:**
 ```bash
 # Navigate to worktree (VS Code already opened if you used --code)
-cd .wt/issue/123-add-oauth-login
+cd .wt/issue/123-investigate-payment-failure
 
 # Your dev server runs on its own port (e.g., PORT=4001)
 npm start
@@ -303,17 +306,11 @@ git push
 **Check status of all worktrees:**
 ```bash
 dux status
-# Shows:
-# - Which worktrees exist
-# - Their PR states (draft/open/merged)
-# - Assigned ports
-# - Whether working directory is clean
 ```
 
 **After PR is merged:**
 ```bash
 dux clean
-# Automatically removes merged worktrees and branches
 ```
 
 ---
@@ -337,7 +334,7 @@ dux clean
 - Installation: Follow instructions at [Codex](https://github.com/codex-ai/codex)
 
 **Droid (Factory AI)** (`--droid`)
-- Uses `droid exec --auto medium --skip-permissions-unsafe` for autonomous operation
+- Uses `droid exec --skip-permissions-unsafe` for autonomous operation
 - Installation: `curl -fsSL https://app.factory.ai/cli | sh`
 - Documentation: [Factory AI Droid CLI](https://docs.factory.ai/cli/droid-exec/overview)
 
@@ -345,19 +342,19 @@ dux clean
 
 **Single issue with AI assistant:**
 ```bash
-dux create 123 --claude          # Opens Claude Code
-dux create 123 --codex           # Opens Codex
-dux create 123 --droid           # Opens Droid (Factory AI)
+dux create "Triage flaky e2e test" --issue 123 --claude
+dux create "Review architecture doc" --issue 123 --codex
+dux create "Debug websocket reconnect" --issue 123 --droid
 ```
 
 **Multiple issues with AI assistant:**
 ```bash
-dux create 123,124,125 --claude  # Opens all in one tmux session with separate windows
+dux create "Prep release" --issue 123,124,125 --claude
 ```
 
 **Combine with other flags:**
 ```bash
-dux create 123 --droid --code    # Opens both Droid in tmux AND VS Code
+dux create "Hardening sprint" --issue 123 --droid --code --start
 ```
 
 ---

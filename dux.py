@@ -208,16 +208,25 @@ def open_in_tmux(dir_path: str, session_name: str, command: str = None):
 
 def open_with_ai_assistant(dir_path: str, assistant: str, issue_description: str, branch: str):
     """Open tmux session with Claude Code, Codex, or Droid and pass the issue description."""
-    # Write issue description to a temporary file to avoid shell escaping issues
-    temp_file = Path(dir_path) / ".dux_issue.txt"
-    temp_file.write_text(issue_description, encoding="utf-8")
+    # Prepend worktree context to prevent AI from navigating to parent directories
+    worktree_prefix = f"""IMPORTANT: You are working in a git worktree at: {dir_path}
+
+This is an isolated working directory for branch: {branch}
+
+DO NOT navigate to parent directories or try to find the "repo root".
+ALL your work should be done in the current directory: {dir_path}
+
+---
+
+"""
+    full_description = worktree_prefix + issue_description
 
     if assistant == "claude":
-        command = f'claude --dangerously-skip-permissions "$(cat {shlex.quote(str(temp_file))})"'
+        command = f'claude --dangerously-skip-permissions {shlex.quote(full_description)}'
     elif assistant == "codex":
-        command = f'codex --dangerously-bypass-approvals-and-sandbox "$(cat {shlex.quote(str(temp_file))})"'
+        command = f'codex --dangerously-bypass-approvals-and-sandbox {shlex.quote(full_description)}'
     elif assistant == "droid":
-        command = f'droid exec --auto medium --skip-permissions-unsafe "$(cat {shlex.quote(str(temp_file))})"'
+        command = f'droid exec --skip-permissions-unsafe {shlex.quote(full_description)}'
     else:
         return
 
@@ -250,15 +259,26 @@ def open_multiple_with_ai_assistant(worktrees: list, assistant: str):
 
     # Create first window (this creates the session)
     first_wt = worktrees[0]
-    temp_file = Path(first_wt["dir_path"]) / ".dux_issue.txt"
-    temp_file.write_text(first_wt["issue_description"], encoding="utf-8")
+
+    # Prepend worktree context
+    worktree_prefix = f"""IMPORTANT: You are working in a git worktree at: {first_wt["dir_path"]}
+
+This is an isolated working directory for branch: {first_wt.get("branch", "N/A")}
+
+DO NOT navigate to parent directories or try to find the "repo root".
+ALL your work should be done in the current directory: {first_wt["dir_path"]}
+
+---
+
+"""
+    full_description = worktree_prefix + first_wt["issue_description"]
 
     if assistant == "claude":
-        command = f'claude --dangerously-skip-permissions "$(cat {shlex.quote(str(temp_file))})"'
+        command = f'claude --dangerously-skip-permissions {shlex.quote(full_description)}'
     elif assistant == "codex":
-        command = f'codex --dangerously-bypass-approvals-and-sandbox "$(cat {shlex.quote(str(temp_file))})"'
+        command = f'codex --dangerously-bypass-approvals-and-sandbox {shlex.quote(full_description)}'
     elif assistant == "droid":
-        command = f'droid exec --auto medium --skip-permissions-unsafe "$(cat {shlex.quote(str(temp_file))})"'
+        command = f'droid exec --skip-permissions-unsafe {shlex.quote(full_description)}'
     else:
         return
 
@@ -269,15 +289,25 @@ def open_multiple_with_ai_assistant(worktrees: list, assistant: str):
 
     # Create additional windows for remaining worktrees
     for idx, wt in enumerate(worktrees[1:], start=1):
-        temp_file = Path(wt["dir_path"]) / ".dux_issue.txt"
-        temp_file.write_text(wt["issue_description"], encoding="utf-8")
+        # Prepend worktree context
+        worktree_prefix = f"""IMPORTANT: You are working in a git worktree at: {wt["dir_path"]}
+
+This is an isolated working directory for branch: {wt.get("branch", "N/A")}
+
+DO NOT navigate to parent directories or try to find the "repo root".
+ALL your work should be done in the current directory: {wt["dir_path"]}
+
+---
+
+"""
+        full_description = worktree_prefix + wt["issue_description"]
 
         if assistant == "claude":
-            command = f'claude --dangerously-skip-permissions "$(cat {shlex.quote(str(temp_file))})"'
+            command = f'claude --dangerously-skip-permissions {shlex.quote(full_description)}'
         elif assistant == "codex":
-            command = f'codex --dangerously-bypass-approvals-and-sandbox "$(cat {shlex.quote(str(temp_file))})"'
+            command = f'codex --dangerously-bypass-approvals-and-sandbox {shlex.quote(full_description)}'
         elif assistant == "droid":
-            command = f'droid exec --auto medium --skip-permissions-unsafe "$(cat {shlex.quote(str(temp_file))})"'
+            command = f'droid exec --skip-permissions-unsafe {shlex.quote(full_description)}'
         else:
             continue
 

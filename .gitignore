@@ -128,3 +128,9 @@ output/
 .claude
 
 .wt
+
+# Dux temporary files
+.dux_issue.txt
+
+CLAUDE.md
+AGENTS.md

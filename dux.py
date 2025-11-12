@@ -658,7 +658,7 @@ def cmd_create(args):
         for r in errors:
             print(f"  #{r['issue_num']}: {r['error']}")
 
-def cmd_clean(_args):
+def cmd_clean(args):
     root = repo_root()
     for wt in parse_worktrees(root):
         path = wt.get("path")
@@ -667,10 +667,26 @@ def cmd_clean(_args):
             continue
         if branch in ("main", "master"):
             continue
-        try:
-            pr = gh_pr_view_by_head(branch)
-            if pr and pr.get("state", "").lower() == "merged":
-                print(f"Pruning {branch}")
+
+        should_remove = False
+
+        if args.all:
+            # Remove all worktrees regardless of PR status
+            should_remove = True
+            print(f"Removing {branch}")
+        else:
+            # Only remove merged PRs
+            try:
+                pr = gh_pr_view_by_head(branch)
+                if pr and pr.get("state", "").lower() == "merged":
+                    should_remove = True
+                    print(f"Pruning {branch} (merged)")
+            except Exception as e:
+                print(f"Skip {branch}: {e}")
+                continue
+
+        if should_remove:
+            try:
                 run(["git", "worktree", "remove", path], cwd=root)
                 try:
                     run(["git", "branch", "-D", branch], cwd=root)
@@ -680,8 +696,8 @@ def cmd_clean(_args):
                     run(["git", "push", "origin", "--delete", branch], cwd=root)
                 except subprocess.CalledProcessError:
                     pass
-        except Exception as e:
-            print(f"Skip {branch}: {e}")
+            except Exception as e:
+                print(f"Error removing {branch}: {e}")
 
 def cmd_status(_args):
     root = repo_root()
@@ -751,6 +767,7 @@ def main():
 
     # clean
     p_clean = sub.add_parser("clean", help="Remove worktrees/branches whose PRs are merged")
+    p_clean.add_argument("--all", action="store_true", help="Remove ALL worktrees (not just merged)")
     p_clean.set_defaults(func=cmd_clean)
 
     args = parser.parse_args()

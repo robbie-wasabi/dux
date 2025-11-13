@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 
 [project.scripts]
-dux = "dux:main"
+dux = "dux.cli:main"
 
 [tool.setuptools]
-py-modules = ["dux"]
+packages = ["dux"]
